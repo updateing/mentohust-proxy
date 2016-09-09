@@ -56,7 +56,6 @@ static const char *D_DHCPSCRIPT = "dhcping -v -t 15";	/* 默认DHCP脚本 */
 static const char *D_DHCPSCRIPT = "dhclient";	/* 默认DHCP脚本 */
 #endif
 static const char *CFG_FILE = "/etc/mentohust.conf";	/* 配置文件 */
-static const char *LOCK_FILE = "/var/run/mentohust.pid";	/* 锁文件 */
 #define LOCKMODE (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)	/* 创建掩码 */
 
 #ifndef NO_NOTIFY
@@ -72,6 +71,7 @@ char nic[NIC_SIZE] = "";	/* 发出认证数据包的网卡名（WAN） */
 char nicLan[NIC_SIZE] = "";	/* 监听认证数据包的网卡名（LAN，仅在代理模式下使用） */
 char dataFile[MAX_PATH] = "";	/* 数据文件 */
 char dhcpScript[MAX_PATH] = "";	/* DHCP脚本 */
+char pidFile[MAX_PATH] = "/var/run/mentohust.pid"; /* 锁文件 */
 u_int32_t ip = 0;	/* 本机IP */
 u_int32_t mask = 0;	/* 子网掩码 */
 u_int32_t gateway = 0;	/* 网关 */
@@ -411,6 +411,7 @@ static void readArg(char argc, char **argv, int *saveFlag, int *exitFlag, int *d
 	    { "proxy-require-success", required_argument, NULL, 'j' },
 	    { "decode-config", required_argument, NULL, 'q' },
 	    { "max-retries", required_argument, NULL, 0},
+	    { "pid-file", required_argument, NULL, 0},
 	    { NULL, no_argument, NULL, 0 }
     };
 
@@ -513,6 +514,8 @@ static void readArg(char argc, char **argv, int *saveFlag, int *exitFlag, int *d
 #define IF_ARG(arg_name) (strcmp(longOpts[longIndex].name, arg_name) == 0)
                 if (IF_ARG("max-retries")) {
                     maxRetries = atoi(optarg);
+                } else if (IF_ARG("pid-file")) {
+                    COPY_ARG_TO(pidFile);
                 }
                 break;
             default:
@@ -724,6 +727,7 @@ static void showHelp(const char *fileName)
 #ifndef NO_GETOPT_LONG
 		/* 从这里开始就是必须使用长选项的参数了 */
 		"\t--max-retries 在得到认证成功或失败的结果前，最多重试的次数，0表示无限重试 [默认0]\n"
+		"\t--pid-file PID文件存放路径，设为none可禁用PID文件锁检查 [默认/var/run/mentohust.pid]\n"
 #endif
 		"例如:\t%s -u username -p password -n eth0 -i 192.168.0.1 -m 255.255.255.0 -g 0.0.0.0 -s 0.0.0.0 -o 0.0.0.0 -t 8 -e 30 -r 15 -a 0 -d 1 -b 0 -v 4.10 -f default.mpf -c dhclient\n"
 		"关于代理模式：此模式下MentoHUST将不会自己发起认证，而是修改LAN内捕获到的认证数据包的源MAC并转发至WAN，使得本机认证通过。\n"
@@ -928,10 +932,15 @@ static void applyDaemonMode(int daemonMode) {
 	}
 }
 
+inline int isPidFileEnabled(char* pidFilePath)
+{
+	return strncmp(pidFilePath, "none", 4);
+}
+
 static void acquirePidFileLock(struct flock* fl)
 {
 	if (lockfd < 0) {
-		lockfd = open (LOCK_FILE, O_RDWR|O_CREAT, LOCKMODE);
+		lockfd = open (pidFile, O_RDWR|O_CREAT, LOCKMODE);
 		if (lockfd < 0) {
 			perror(_("!! 打开锁文件失败"));
 			goto error_exit;
@@ -958,6 +967,11 @@ error_exit:
 
 static void checkRunningInstance(int exitFlag)
 {
+	if (!isPidFileEnabled(pidFile)) {
+		print_log("!! 已禁用PID检查，请确保没有其他实例干扰认证进程\n");
+		return;
+	}
+
 	struct flock fl;
 	acquirePidFileLock(&fl);
 
@@ -980,6 +994,11 @@ static void checkRunningInstance(int exitFlag)
 }
 
 static void lockPidFile() {
+	if (!isPidFileEnabled(pidFile)) {
+		// 此处不需要提示
+		return;
+	}
+
 	struct flock fl;
 	acquirePidFileLock(&fl);
 
